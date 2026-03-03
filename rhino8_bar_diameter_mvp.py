@@ -300,8 +300,10 @@ def BarDiameterMVP():
         for pl in polylines:
             if pl is None or pl.Count < 4:
                 continue
-            if not pl[0].EpsilonEquals(pl[-1], 1e-6):
-                pl.Add(pl[0])
+            first_pt = pl[0]
+            last_pt = pl[pl.Count - 1]
+            if not first_pt.EpsilonEquals(last_pt, 1e-6):
+                pl.Add(first_pt)
             c = Rhino.Geometry.PolylineCurve(pl)
             if c and c.IsClosed:
                 section_curves.append(c)
