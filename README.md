@@ -25,12 +25,24 @@ Minimal Rhino 8 Python script to estimate rebar diameter from noisy merged STL s
 3. Open `rhino8_bar_diameter_mvp.py` and run.
 4. Follow prompts:
    - Select mesh
+<<<<<<< codex/create-tool-for-measuring-rebar-diameters-in-stl-bb6fxo
+   - Pick start/end on same bar (can be up to ~1000 mm apart)
+   - Slice spacing (mm)
+=======
    - Pick start/end on same bar
    - Slice spacing (mm)
    - Max loop-center distance
+>>>>>>> main
 
 ## Notes / limitations
 - If bars are fused, you must pick points on a segment where one bar dominates.
 - Works best when points are 100–500 mm apart.
 - Bent bars are handled better than straight-axis slicing because tangent comes from mesh path.
+<<<<<<< codex/create-tool-for-measuring-rebar-diameters-in-stl-bb6fxo
+- Loop-center distance is now automatic (derived from spacing), so there is one less input to tune.
+- If too few valid slices are found, repick cleaner points or increase slice spacing slightly.
+
+- If topology between picked points is disconnected, script auto-falls back to straight path between picks.
+=======
 - If too few valid slices are found, increase `Max loop-center distance` or repick cleaner points.
+>>>>>>> main
