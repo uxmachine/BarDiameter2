@@ -26,6 +26,13 @@ def _dist2(a, b):
     return dx * dx + dy * dy + dz * dz
 
 
+def _lerp_point(a, b, t):
+    return Rhino.Geometry.Point3d(
+        a.X + (b.X - a.X) * t,
+        a.Y + (b.Y - a.Y) * t,
+        a.Z + (b.Z - a.Z) * t,
+    )
+
 
 def _nearest_mesh_vertex_index(mesh, point3d):
     best_i = None
@@ -157,7 +164,7 @@ def _resample_polyline(points, spacing):
             out.append(a)
             continue
         alpha = (t - cum[seg]) / seg_len
-        out.append(a + alpha * (b - a))
+        out.append(_lerp_point(a, b, alpha))
     return out
 
 
