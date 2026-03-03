@@ -4,17 +4,15 @@ Rhino 8 MVP script: estimate rebar diameter from a noisy merged STL mesh.
 Usage in Rhino 8:
 1) Open PythonScript editor.
 2) Load this file and run `BarDiameterMVP()`.
-3) Pick one mesh, then two points on the same bar segment.
-
-Output:
-- Per-slice equivalent diameters.
-- Mean / median diameter.
-- 95% confidence interval (normal approximation).
+3) Select mesh once, then keep measuring bars in a loop.
 """
 
+import csv
 import math
+from datetime import datetime
 
 import Rhino
+import System
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -46,7 +44,6 @@ def _nearest_mesh_vertex_index(mesh, point3d):
 
 
 def _closest_topology_vertex_index(mesh, point3d):
-    """Map picked point to a topology vertex robustly across Rhino versions."""
     topo = mesh.TopologyVertices
     mp = mesh.ClosestMeshPoint(point3d, 0.0)
 
@@ -233,46 +230,75 @@ def _pick_relevant_loop(section_curves, sample_point, max_center_dist):
     return best_curve
 
 
-def BarDiameterMVP():
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("Select merged rebar mesh")
-    go.GeometryFilter = Rhino.DocObjects.ObjectType.Mesh
-    go.SubObjectSelect = False
-    go.Get()
-    if go.CommandResult() != Rhino.Commands.Result.Success:
-        return go.CommandResult()
+def _ensure_slice_sublayer():
+    parent_index = sc.doc.Layers.CurrentLayerIndex
+    parent_layer = sc.doc.Layers[parent_index]
+    full = "{}::BarDiameterMVP_Slices".format(parent_layer.FullPath)
+    existing = sc.doc.Layers.FindByFullPath(full, -1)
+    if existing >= 0:
+        return existing
 
-    mesh_obj = go.Object(0)
-    mesh = mesh_obj.Mesh()
-    if not mesh:
-        Rhino.RhinoApp.WriteLine("No mesh selected.")
-        return Rhino.Commands.Result.Failure
+    layer = Rhino.DocObjects.Layer()
+    layer.Name = "BarDiameterMVP_Slices"
+    layer.ParentLayerId = parent_layer.Id
+    layer.Color = System.Drawing.Color.OrangeRed
+    return sc.doc.Layers.Add(layer)
 
-    p1 = rs.GetPointOnMesh(mesh_obj.ObjectId, "Pick start point on one bar")
+
+def _add_curve_on_layer(curve, layer_index):
+    if layer_index is None or layer_index < 0:
+        sc.doc.Objects.AddCurve(curve)
+        return
+    attr = Rhino.DocObjects.ObjectAttributes()
+    attr.LayerIndex = layer_index
+    sc.doc.Objects.AddCurve(curve, attr)
+
+
+def _add_point_on_layer(pt, layer_index):
+    if layer_index is None or layer_index < 0:
+        sc.doc.Objects.AddPoint(pt)
+        return
+    attr = Rhino.DocObjects.ObjectAttributes()
+    attr.LayerIndex = layer_index
+    sc.doc.Objects.AddPoint(pt, attr)
+
+
+def _measurement_stats(diameters):
+    n = len(diameters)
+    mean_d = sum(diameters) / n
+    sorted_d = sorted(diameters)
+    median_d = sorted_d[n // 2] if n % 2 == 1 else 0.5 * (sorted_d[n // 2 - 1] + sorted_d[n // 2])
+    var = sum((x - mean_d) ** 2 for x in diameters) / max(1, n - 1)
+    std = math.sqrt(var)
+    half_ci = 1.96 * std / math.sqrt(n)
+    return {
+        "n": n,
+        "mean": mean_d,
+        "median": median_d,
+        "std": std,
+        "ci_low": mean_d - half_ci,
+        "ci_high": mean_d + half_ci,
+    }
+
+
+def _measure_once(mesh_obj, mesh, graph, spacing, layer_index):
+    p1 = rs.GetPointOnMesh(mesh_obj.ObjectId, "Pick start point on one bar (Esc to finish)")
     if not p1:
-        return Rhino.Commands.Result.Cancel
+        return None
     p2 = rs.GetPointOnMesh(mesh_obj.ObjectId, "Pick end point on the SAME bar (100-1000mm away)")
     if not p2:
-        return Rhino.Commands.Result.Cancel
-
-    spacing = rs.GetReal("Slice spacing (mm)", 50.0, 10.0, 1000.0)
-    if spacing is None:
-        return Rhino.Commands.Result.Cancel
+        return None
 
     max_center_dist = _auto_max_center_dist(spacing)
     Rhino.RhinoApp.WriteLine("Using auto loop-center distance: {:.1f} mm".format(max_center_dist))
-
-    mesh.Normals.ComputeNormals()
-    mesh.Compact()
 
     s_topo = _closest_topology_vertex_index(mesh, p1)
     e_topo = _closest_topology_vertex_index(mesh, p2)
     if s_topo is None or e_topo is None:
         Rhino.RhinoApp.WriteLine("Could not map picked points to mesh topology vertices.")
-        return Rhino.Commands.Result.Failure
+        return False
 
     topo = mesh.TopologyVertices
-    graph = _build_mesh_graph(mesh)
     path_ids = _dijkstra_path(mesh, graph, s_topo, e_topo)
 
     if path_ids and len(path_ids) >= 2:
@@ -284,7 +310,6 @@ def BarDiameterMVP():
         Rhino.RhinoApp.WriteLine("Path mode: straight fallback used (mesh path not connected).")
 
     diameters = []
-    good_points = []
 
     for i, pt in enumerate(samples):
         tan = _local_tangent(samples, i)
@@ -324,31 +349,140 @@ def BarDiameterMVP():
             continue
 
         diameters.append(d)
-        good_points.append(pt)
+        _add_point_on_layer(pt, layer_index)
+        _add_curve_on_layer(chosen.DuplicateCurve(), layer_index)
 
     n = len(diameters)
     if n < 3:
         Rhino.RhinoApp.WriteLine("Not enough valid slices. Repick cleaner points or increase slice spacing.")
+        return False
+
+    stats = _measurement_stats(diameters)
+    Rhino.RhinoApp.WriteLine("--- BarDiameterMVP ---")
+    Rhino.RhinoApp.WriteLine("Valid slices: {}".format(stats["n"]))
+    Rhino.RhinoApp.WriteLine("Diameters (mm): {}".format(", ".join("{:.2f}".format(x) for x in diameters)))
+    Rhino.RhinoApp.WriteLine("Mean diameter (mm): {:.2f}".format(stats["mean"]))
+    Rhino.RhinoApp.WriteLine("Median diameter (mm): {:.2f}".format(stats["median"]))
+    Rhino.RhinoApp.WriteLine("Std dev (mm): {:.2f}".format(stats["std"]))
+    Rhino.RhinoApp.WriteLine("95% CI for mean (mm): [{:.2f}, {:.2f}]".format(stats["ci_low"], stats["ci_high"]))
+
+    sc.doc.Views.Redraw()
+    stats["diameters"] = diameters
+    return stats
+
+
+def _unique_bar_name(base_name, name_counts):
+    base = (base_name or "BAR").strip() or "BAR"
+    count = name_counts.get(base, 0) + 1
+    name_counts[base] = count
+    return "{}_{}".format(base, count)
+
+
+def _export_csv(rows):
+    path = rs.SaveFileName(
+        "Save bar diameter results as CSV",
+        "CSV Files (*.csv)|*.csv||",
+        None,
+        "bar_diameter_results.csv",
+        "csv",
+    )
+    if not path:
+        Rhino.RhinoApp.WriteLine("CSV export skipped.")
+        return
+
+    headers = [
+        "measurement_name",
+        "input_bar_name",
+        "timestamp",
+        "slice_spacing_mm",
+        "valid_slices",
+        "mean_mm",
+        "median_mm",
+        "std_mm",
+        "ci95_low_mm",
+        "ci95_high_mm",
+        "slice_diameters_mm",
+    ]
+
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(headers)
+        for r in rows:
+            w.writerow([
+                r["name"],
+                r["base_name"],
+                r["timestamp"],
+                "{:.2f}".format(r["spacing"]),
+                r["n"],
+                "{:.3f}".format(r["mean"]),
+                "{:.3f}".format(r["median"]),
+                "{:.3f}".format(r["std"]),
+                "{:.3f}".format(r["ci_low"]),
+                "{:.3f}".format(r["ci_high"]),
+                ";".join("{:.3f}".format(x) for x in r["diameters"]),
+            ])
+
+    Rhino.RhinoApp.WriteLine("CSV exported: {}".format(path))
+
+
+def BarDiameterMVP():
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("Select merged rebar mesh")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Mesh
+    go.SubObjectSelect = False
+    go.Get()
+    if go.CommandResult() != Rhino.Commands.Result.Success:
+        return go.CommandResult()
+
+    mesh_obj = go.Object(0)
+    mesh = mesh_obj.Mesh()
+    if not mesh:
+        Rhino.RhinoApp.WriteLine("No mesh selected.")
         return Rhino.Commands.Result.Failure
 
-    mean_d = sum(diameters) / n
-    sorted_d = sorted(diameters)
-    median_d = sorted_d[n // 2] if n % 2 == 1 else 0.5 * (sorted_d[n // 2 - 1] + sorted_d[n // 2])
-    var = sum((x - mean_d) ** 2 for x in diameters) / max(1, n - 1)
-    std = math.sqrt(var)
-    half_ci = 1.96 * std / math.sqrt(n)
+    spacing = rs.GetReal("Slice spacing (mm)", 50.0, 10.0, 1000.0)
+    if spacing is None:
+        return Rhino.Commands.Result.Cancel
 
-    Rhino.RhinoApp.WriteLine("--- BarDiameterMVP ---")
-    Rhino.RhinoApp.WriteLine("Valid slices: {}".format(n))
-    Rhino.RhinoApp.WriteLine("Diameters (mm): {}".format(", ".join("{:.2f}".format(x) for x in diameters)))
-    Rhino.RhinoApp.WriteLine("Mean diameter (mm): {:.2f}".format(mean_d))
-    Rhino.RhinoApp.WriteLine("Median diameter (mm): {:.2f}".format(median_d))
-    Rhino.RhinoApp.WriteLine("Std dev (mm): {:.2f}".format(std))
-    Rhino.RhinoApp.WriteLine("95% CI for mean (mm): [{:.2f}, {:.2f}]".format(mean_d - half_ci, mean_d + half_ci))
+    mesh.Normals.ComputeNormals()
+    mesh.Compact()
+    graph = _build_mesh_graph(mesh)
 
-    for pt in good_points:
-        sc.doc.Objects.AddPoint(pt)
-    sc.doc.Views.Redraw()
+    layer_index = _ensure_slice_sublayer()
+    if layer_index < 0:
+        Rhino.RhinoApp.WriteLine("Could not create sublayer; slices will be placed on current layer.")
+
+    rows = []
+    name_counts = {}
+
+    while True:
+        result = _measure_once(mesh_obj, mesh, graph, spacing, layer_index)
+        if result is None:
+            break
+        if result is False:
+            again_after_fail = rs.GetString("Measurement failed. Try another?", "Y", ["Y", "N"])
+            if again_after_fail == "N":
+                break
+            continue
+
+        base_name = rs.GetString("Bar ID for this measurement", "BAR")
+        if base_name is None:
+            base_name = "BAR"
+        unique_name = _unique_bar_name(base_name, name_counts)
+
+        result["name"] = unique_name
+        result["base_name"] = base_name
+        result["spacing"] = spacing
+        result["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        rows.append(result)
+        Rhino.RhinoApp.WriteLine("Saved measurement as: {}".format(unique_name))
+
+        again = rs.GetString("Measure another bar?", "Y", ["Y", "N"])
+        if again == "N":
+            break
+
+    if rows:
+        _export_csv(rows)
 
     return Rhino.Commands.Result.Success
 
