@@ -473,7 +473,7 @@ def BarDiameterMVP():
         result["name"] = unique_name
         result["base_name"] = base_name
         result["spacing"] = spacing
-        result["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        result["timestamp"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         rows.append(result)
         Rhino.RhinoApp.WriteLine("Saved measurement as: {}".format(unique_name))
 
