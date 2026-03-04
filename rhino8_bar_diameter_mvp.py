@@ -378,6 +378,20 @@ def _unique_bar_name(base_name, name_counts):
     return "{}_{}".format(base, count)
 
 
+def _csv_safe(value):
+    try:
+        unicode_type = unicode  # type: ignore[name-defined]
+    except NameError:
+        unicode_type = str
+
+    if isinstance(value, unicode_type):
+        try:
+            return value.encode("utf-8")
+        except Exception:
+            return str(value)
+    return value
+
+
 def _export_csv(rows):
     path = rs.SaveFileName(
         "Save bar diameter results as CSV",
@@ -404,22 +418,22 @@ def _export_csv(rows):
         "slice_diameters_mm",
     ]
 
-    with open(path, "w", newline="") as f:
+    with open(path, "wb") as f:
         w = csv.writer(f)
-        w.writerow(headers)
+        w.writerow([_csv_safe(h) for h in headers])
         for r in rows:
             w.writerow([
-                r["name"],
-                r["base_name"],
-                r["timestamp"],
-                "{:.2f}".format(r["spacing"]),
-                r["n"],
-                "{:.3f}".format(r["mean"]),
-                "{:.3f}".format(r["median"]),
-                "{:.3f}".format(r["std"]),
-                "{:.3f}".format(r["ci_low"]),
-                "{:.3f}".format(r["ci_high"]),
-                ";".join("{:.3f}".format(x) for x in r["diameters"]),
+                _csv_safe(r["name"]),
+                _csv_safe(r["base_name"]),
+                _csv_safe(r["timestamp"]),
+                _csv_safe("{:.2f}".format(r["spacing"])),
+                _csv_safe(r["n"]),
+                _csv_safe("{:.3f}".format(r["mean"])),
+                _csv_safe("{:.3f}".format(r["median"])),
+                _csv_safe("{:.3f}".format(r["std"])),
+                _csv_safe("{:.3f}".format(r["ci_low"])),
+                _csv_safe("{:.3f}".format(r["ci_high"])),
+                _csv_safe(";".join("{:.3f}".format(x) for x in r["diameters"])),
             ])
 
     Rhino.RhinoApp.WriteLine("CSV exported: {}".format(path))
